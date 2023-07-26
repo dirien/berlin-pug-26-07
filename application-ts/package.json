@@ -1,0 +1,11 @@
+{
+  "name": "application-ts",
+  "main": "index.ts",
+  "devDependencies": {
+    "@types/node": "^18"
+  },
+  "dependencies": {
+    "@pulumi/pulumi": "3.76.0",
+    "@pulumi/kubernetes": "4.0.3"
+  }
+}
