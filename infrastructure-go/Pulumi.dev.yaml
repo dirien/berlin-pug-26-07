@@ -1,2 +1,3 @@
-config:
-  aws:region: eu-central-1
+environment:
+  imports:
+  - pug-demo-env

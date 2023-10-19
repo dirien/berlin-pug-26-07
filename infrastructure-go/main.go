@@ -26,7 +26,7 @@ var (
 )
 
 const (
-	clusterName       = "berlin-pug-eks-cluster"
+	clusterName       = "pug-eks-cluster"
 	clusterTag        = "kubernetes.io/cluster/" + clusterName
 	albNamespace      = "aws-lb-controller"
 	albServiceAccount = "system:serviceaccount:" + albNamespace + ":aws-lb-controller-serviceaccount"
@@ -36,19 +36,19 @@ const (
 func main() {
 	pulumi.Run(func(ctx *pulumi.Context) error {
 		// Create an AWS resource (S3 Bucket)
-		vpc, err := ec2.NewVpc(ctx, "berlin-pug-vpc", &ec2.VpcArgs{
+		vpc, err := ec2.NewVpc(ctx, "pug-vpc", &ec2.VpcArgs{
 			CidrBlock: pulumi.String("172.31.0.0/16"),
 		})
 		if err != nil {
 			return err
 		}
-		igw, err := ec2.NewInternetGateway(ctx, "berlin-pug-igw", &ec2.InternetGatewayArgs{
+		igw, err := ec2.NewInternetGateway(ctx, "pug-igw", &ec2.InternetGatewayArgs{
 			VpcId: vpc.ID(),
 		})
 		if err != nil {
 			return err
 		}
-		rt, err := ec2.NewRouteTable(ctx, "berlin-pug-rt", &ec2.RouteTableArgs{
+		rt, err := ec2.NewRouteTable(ctx, "pug-rt", &ec2.RouteTableArgs{
 			VpcId: vpc.ID(),
 			Routes: ec2.RouteTableRouteArray{
 				&ec2.RouteTableRouteArgs{
@@ -65,7 +65,7 @@ func main() {
 
 		// Create a subnet for each availability zone
 		for i, az := range availabilityZones {
-			publicSubnet, err := ec2.NewSubnet(ctx, fmt.Sprintf("berlin-pug-subnet-%d", i), &ec2.SubnetArgs{
+			publicSubnet, err := ec2.NewSubnet(ctx, fmt.Sprintf("pug-subnet-%d", i), &ec2.SubnetArgs{
 				VpcId:                       vpc.ID(),
 				CidrBlock:                   pulumi.String(publicSubnetCidrs[i]),
 				MapPublicIpOnLaunch:         pulumi.Bool(true),
@@ -80,7 +80,7 @@ func main() {
 			if err != nil {
 				return err
 			}
-			_, err = ec2.NewRouteTableAssociation(ctx, fmt.Sprintf("berlin-pug-rt-association-%s", az), &ec2.RouteTableAssociationArgs{
+			_, err = ec2.NewRouteTableAssociation(ctx, fmt.Sprintf("pug-rt-association-%s", az), &ec2.RouteTableAssociationArgs{
 				RouteTableId: rt.ID(),
 				SubnetId:     publicSubnet.ID(),
 			})
@@ -109,27 +109,34 @@ func main() {
 
 		ctx.Export("kubeconfig", pulumi.ToSecret(cluster.Kubeconfig))
 
-		albRole, err := iam.NewRole(ctx, "berlin-pug-alb-role", &iam.RoleArgs{
+		albRole, err := iam.NewRole(ctx, "pug-alb-role", &iam.RoleArgs{
 			AssumeRolePolicy: pulumi.All(cluster.Core.OidcProvider().Arn(), cluster.Core.OidcProvider().Url()).ApplyT(func(args []interface{}) (string, error) {
 				arn := args[0].(string)
 				url := args[1].(string)
-				return fmt.Sprintf(`{
-						"Version": "2012-10-17",
-						"Statement": [
-							{
-								"Effect": "Allow",
-								"Principal": {
-									"Federated": "%s"
+				policyDocument, _ := iam.GetPolicyDocument(ctx, &iam.GetPolicyDocumentArgs{
+					Statements: []iam.GetPolicyDocumentStatement{
+						iam.GetPolicyDocumentStatement{
+							Actions: []string{"sts:AssumeRoleWithWebIdentity"},
+							Conditions: []iam.GetPolicyDocumentStatementCondition{
+								iam.GetPolicyDocumentStatementCondition{
+									Test:     "StringEquals",
+									Values:   []string{albServiceAccount},
+									Variable: fmt.Sprintf("%s:sub", url),
 								},
-								"Action": "sts:AssumeRoleWithWebIdentity",
-								"Condition": {
-									"StringEquals": {
-										"%s:sub": "%s"
-									}
-								}
-							}
-						]
-					}`, arn, url, albServiceAccount), nil
+							},
+							Effect: pulumi.StringRef("Allow"),
+							Principals: []iam.GetPolicyDocumentStatementPrincipal{
+								iam.GetPolicyDocumentStatementPrincipal{
+									Type: "Federated",
+									Identifiers: []string{
+										arn,
+									},
+								},
+							},
+						},
+					},
+				})
+				return policyDocument.Json, nil
 			}).(pulumi.StringOutput),
 		})
 		if err != nil {
@@ -137,13 +144,13 @@ func main() {
 		}
 
 		albPolicyFile, _ := os.ReadFile("./iam-policies/alb-iam-policy.json")
-		albIAMPolicy, err := iam.NewPolicy(ctx, "berlin-pug-alb-policy", &iam.PolicyArgs{
+		albIAMPolicy, err := iam.NewPolicy(ctx, "pug-alb-policy", &iam.PolicyArgs{
 			Policy: pulumi.String(albPolicyFile),
 		}, pulumi.DependsOn([]pulumi.Resource{albRole}))
 		if err != nil {
 			return err
 		}
-		_, err = iam.NewRolePolicyAttachment(ctx, "berlin-pug-alb-role-attachment", &iam.RolePolicyAttachmentArgs{
+		_, err = iam.NewRolePolicyAttachment(ctx, "pug-alb-role-attachment", &iam.RolePolicyAttachmentArgs{
 			PolicyArn: albIAMPolicy.Arn,
 			Role:      albRole.Name,
 		}, pulumi.DependsOn([]pulumi.Resource{albIAMPolicy}))
@@ -151,7 +158,7 @@ func main() {
 			return err
 		}
 
-		provider, err := kubernetes.NewProvider(ctx, "berlin-pug-k8s-provider", &kubernetes.ProviderArgs{
+		provider, err := kubernetes.NewProvider(ctx, "pug-k8s-provider", &kubernetes.ProviderArgs{
 			Kubeconfig:            cluster.KubeconfigJson,
 			EnableServerSideApply: pulumi.Bool(true),
 		}, pulumi.DependsOn([]pulumi.Resource{cluster}))
@@ -185,7 +192,7 @@ func main() {
 
 		_, err = helm.NewRelease(ctx, "aws-load-balancer-controller", &helm.ReleaseArgs{
 			Chart:     pulumi.String("aws-load-balancer-controller"),
-			Version:   pulumi.String("1.5.3"),
+			Version:   pulumi.String("1.6.1"),
 			Namespace: ns.Metadata.Name(),
 			RepositoryOpts: helm.RepositoryOptsArgs{
 				Repo: pulumi.String("https://aws.github.io/eks-charts"),
